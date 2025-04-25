@@ -114,3 +114,114 @@
             error u0)
         u0))
 )
+
+;; Updated distribute-royalty-payment
+(define-private (distribute-royalty-payment (song-identifier uint) (payment-amount uint))
+    (let (
+        (royalty-distribution-list (get-royalty-shares-by-song song-identifier))
+        (total-distributed (fold process-royalty-share 
+                               royalty-distribution-list 
+                               payment-amount))
+    )
+    (begin
+        (asserts! (> (len royalty-distribution-list) u0) ERR-SONG-DOES-NOT-EXIST)
+        (asserts! (> total-distributed u0) ERR-PAYMENT-FAILED)
+        (ok total-distributed)))
+)
+
+;; Public functions with added input validation
+(define-public (register-new-song (song-title (string-ascii 50)) (primary-artist principal))
+    (let (
+        (new-song-identifier (+ (var-get registered-song-count) u1))
+    )
+    (begin
+        (asserts! (verify-contract-administrator) ERR-UNAUTHORIZED-ACCESS)
+        (asserts! (validate-string-ascii song-title) ERR-INVALID-SONG-TITLE)
+        (asserts! (validate-principal primary-artist) ERR-INVALID-PRIMARY-ARTIST)
+
+        (map-set RegisteredSongs
+            { song-identifier: new-song-identifier }
+            {
+                song-title: song-title,
+                primary-artist: primary-artist,
+                accumulated-revenue: u0,
+                publication-date: block-height,
+                song-status-active: true
+            }
+        )
+        (var-set registered-song-count new-song-identifier)
+        (ok new-song-identifier)))
+)
+
+(define-public (set-royalty-distribution 
+    (song-identifier uint) 
+    (royalty-recipient principal) 
+    (royalty-percentage uint) 
+    (participant-role (string-ascii 20)))
+    (let (
+        (song-record (get-song-information song-identifier))
+    )
+    (begin
+        (asserts! (is-some song-record) ERR-SONG-DOES-NOT-EXIST)
+        (asserts! (validate-royalty-percentage royalty-percentage) ERR-INVALID-ROYALTY-PERCENTAGE)
+        (asserts! (validate-participant-role participant-role) ERR-INVALID-PARTICIPANT-ROLE)
+        (asserts! (validate-principal royalty-recipient) ERR-INVALID-ROYALTY-RECIPIENT)
+
+        (map-set RoyaltyDistribution
+            { song-identifier: song-identifier, royalty-recipient: royalty-recipient }
+            {
+                royalty-percentage: royalty-percentage,
+                participant-role: participant-role,
+                accumulated-earnings: u0
+            }
+        )
+        (ok true)))
+)
+
+(define-public (process-royalty-payment (song-identifier uint) (royalty-payment-amount uint))
+    (let (
+        (song-record (get-song-information song-identifier))
+    )
+    (begin
+        (asserts! (is-some song-record) ERR-SONG-DOES-NOT-EXIST)
+        (asserts! (>= (stx-get-balance tx-sender) royalty-payment-amount) ERR-INSUFFICIENT-PAYMENT-FUNDS)
+
+        (try! (distribute-royalty-payment song-identifier royalty-payment-amount))
+        (map-set RegisteredSongs
+            { song-identifier: song-identifier }
+            (merge (unwrap-panic song-record)
+                { accumulated-revenue: (+ (get accumulated-revenue (unwrap-panic song-record)) royalty-payment-amount) }
+            )
+        )
+        (ok true)))
+)
+
+(define-public (update-song-active-status (song-identifier uint) (new-active-status bool))
+    (let (
+        (song-record (get-song-information song-identifier))
+    )
+    (begin
+        (asserts! (verify-contract-administrator) ERR-UNAUTHORIZED-ACCESS)
+        (asserts! (is-some song-record) ERR-SONG-DOES-NOT-EXIST)
+
+        (map-set RegisteredSongs
+            { song-identifier: song-identifier }
+            (merge (unwrap-panic song-record)
+                { song-status-active: new-active-status }
+            )
+        )
+        (ok true)))
+)
+
+(define-public (transfer-administrator-rights (new-administrator principal))
+    (begin
+        (asserts! (verify-contract-administrator) ERR-UNAUTHORIZED-ACCESS)
+        (asserts! (validate-principal new-administrator) ERR-INVALID-ADMINISTRATOR)
+
+        (var-set contract-administrator new-administrator)
+        (ok true))
+)
+
+;; Contract initialization
+(begin
+    (var-set registered-song-count u0))
